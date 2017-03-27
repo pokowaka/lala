@@ -1,0 +1,121 @@
+#!/usr/local/bin/python
+import hashlib
+import logging
+import optparse
+import os, sys
+import pickle
+import traceback
+from progressbar import ProgressBar
+from lala import leela, annotations, sgflib
+
+RESTART_COUNT=1
+
+def graph_winrates(winrates, color, outp_fn):
+    import matplotlib as mpl
+    mpl.use('Agg')
+    import matplotlib.pyplot as plt
+
+    X = []
+    Y = []
+    for move_num in sorted(winrates.keys()):
+        pl, wr = winrates[move_num]
+
+        if pl != color:
+            wr = 1. - wr
+        X.append(move_num)
+        Y.append(wr)
+
+    plt.figure(1)
+    plt.axhline(0.5, 0, max(winrates.keys()), linestyle='--', color='0.7')
+    plt.plot(X, Y, color='k', marker='+')
+    plt.xlim(0, max(winrates.keys()))
+    plt.ylim(0, 1)
+    plt.xlabel("Move Number", fontsize=28)
+    plt.ylabel("Win Rate", fontsize=28)
+    plt.savefig(outp_fn, dpi=200, format='pdf', bbox_inches='tight')
+
+def retry_analysis(fn):
+    global RESTART_COUNT
+    def wrapped(*args, **kwargs):
+        for i in xrange(RESTART_COUNT+1):
+            try:
+                return fn(*args, **kwargs)
+            except Exception, e:
+                if i+1 == RESTART_COUNT+1:
+                    raise
+                logging.error("Error in leela, retrying analysis...")
+    return wrapped
+
+@retry_analysis
+def do_analyze(C, leela, pb, tries):
+    leela.start()
+    leela.reset()
+    leela.goto_position()
+    stats, move_list = leela.analyze()
+    leela.stop()
+
+    return stats, move_list
+
+if __name__=='__main__':
+    parser = optparse.OptionParser()
+    parser.add_option('-m', '--after-m', dest='after', default=0, type=int,
+            help="Suggest moves starting after the first M moves (default=0)", metavar="M")
+    parser.add_option('-n', '--first-n', dest='before', default=0, type=int,
+            help="Suggest moves for all of the first N moves (default=0)", metavar="N")
+    parser.add_option('-g', '--win-graph', dest='win_graph',
+            help="Graph the win rate of the selected player (Requires a move range with -m and -n)")
+    parser.add_option('-x', '--executable', default='leela_090_macOS_opencl', 
+            help="Set the default executable name for the leela command line engine")
+    parser.add_option('-c', '--checkpoint-directory', dest='ckpt_dir',
+            default=os.path.expanduser('~/.leela_checkpoints'),
+            help="Set a directory to store partially complete analyses")
+    parser.add_option('-l', '--limit', dest='eval_limit', default=None, type=int,
+                      help="Limit the number of evaluations (default: Unlimited)")
+    parser.add_option('-r', '--restarts', default=1, type=int,
+            help="If leela crashes, retry the analysis step this many times before reporting a failure")
+    parser.add_option( '-d', '--debug', help="Print lots of debugging statements",
+            action="store_const", dest="loglevel", const=logging.DEBUG, default=logging.WARNING)
+    parser.add_option( '-v', '--verbose', help="Be verbose", action="store_const",
+            dest="loglevel", const=logging.INFO)
+    opts, args = parser.parse_args()
+    logging.basicConfig(level=opts.loglevel)
+
+    sgf_fn = args[0]
+    sgf = sgflib.SGFParser.open(sgf_fn)
+
+    RESTART_COUNT = opts.restarts
+
+    cursor = sgf.cursor()
+
+    if 'SZ' in cursor.node.keys():
+        SZ = int(cursor.node['SZ'].data[0])
+    else:
+        SZ = 19
+
+    leela = leela.CLI(board_size=SZ, eval_limit=opts.eval_limit,
+                          executable=opts.executable)
+    idx = 0
+
+    while not cursor.atEnd:
+        cursor.next()
+        idx = idx + 1
+        logging.debug("Move: {0} - {1}".format(idx, cursor))
+        if 'W' in cursor.node.keys():
+            leela.add_move('white', cursor.node['W'].data[0])
+            print('W')
+        if 'B' in cursor.node.keys():
+            print('B')
+            leela.add_move('black', cursor.node['B'].data[0])
+        if idx > opts.after and idx < opts.before:
+            info = {'chosen': 'pp', 'mc_winrate': 0.625, 'visits': 146738, 'winrate': 0.6056, 'nn_winrate': 0.40053, 'margin': 'W+27.0', 'best': 'pp'}, 
+            moves = {'pp': {'seq': ['pp', 'dd', 'dp', 'pd', 'nc', 'qf', 'pb', 'qn', 'nq', 'rp', 'qc', 'qq', 'qh', 'qj'], 'Vn': 2669, 'N': 0.138, 'Vp': 0.6402, 'U': 0.5774, 'visits': 87841, 'W': 0.6056}, 'dd': {'seq': ['dd', 'pp', 'pd', 'dp', 'jd'], 'Vn': 421, 'N': 0.138, 'Vp': 0.5877, 'U': 0.5756, 'visits': 13390, 'W': 0.581}, 'pc': {'seq': ['pc', 'qp', 'pp'], 'Vn': 10, 'N': 0.052, 'Vp': 0.4468, 'U': 0.5888, 'visits': 443, 'W': 0.5249}, 'qd': {'seq': ['qd', 'dc', 'pq', 'po'], 'Vn': 11, 'N': 0.052, 'Vp': 0.4673, 'U': 0.5709, 'visits': 441, 'W': 0.5243}, 'pd': {'seq': ['pd', 'pp', 'dq', 'dd', 'co', 'nc', 'qf', 'pb'], 'Vn': 1090, 'N': 0.138, 'Vp': 0.6057, 'U': 0.5738, 'visits': 35523, 'W': 0.5882}, 'dp': {'seq': ['dp', 'pp', 'dd', 'pd', 'dj', 'fc', 'ec'], 'Vn': 215, 'N': 0.138, 'Vp': 0.5752, 'U': 0.5722, 'visits': 7028, 'W': 0.5736}}
+            # info, moves = leela.analyze()
+            for k in moves:
+                data = ["white", "black", "white", "black", "white", "black", "white", "white", "black", "white", "black", "white", "black", "white", "black", "white", "black", "white", "black", "white", "black", "white", "black", "white", "black", "white", "black", "white", "black", "white", "black", "white", "black", "white"]
+                t = zip(data, moves[k].get('seq'))
+                annotations.insert_sequence(cursor, t)
+            #leela.start()
+            #logging.info(leela.analyze())
+
+
+    print sgf
